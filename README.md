@@ -1,69 +1,67 @@
-# Edge Impulse Example: standalone inferencing (Espressif ESP32)
+# ESP32-S3 水果品质检测
 
-This repository runs an exported impulse on the Espressif ESP32. See the documentation at [Running your impulse locally](https://docs.edgeimpulse.com/docs/running-your-impulse-locally-1).
+基于 Edge Impulse AI 模型，使用 5 路气体传感器进行水果品质分类，OLED 实时显示结果。
 
-## Requirements
+## 引脚分配
 
-### Hardware
+| 功能 | GPIO | 说明 |
+|------|------|------|
+| **气体传感器 H2S** | GPIO7 | ADC 采集 |
+| **气体传感器 ODOR** | GPIO1 | ADC 采集 |
+| **气体传感器 HCHO** | GPIO2 | ADC 采集 |
+| **气体传感器 NH3** | GPIO5 | ADC 采集 |
+| **气体传感器 ETHANOL** | GPIO6 | ADC 采集 |
+| **状态指示灯** | GPIO21 | 推理时闪烁 |
+| **OLED SDA** | GPIO40 | I2C 数据线 |
+| **OLED SCL** | GPIO39 | I2C 时钟线 |
 
-* [ESP-EYE](https://www.espressif.com/en/products/devkits/esp-eye/overview).
+## 硬件要求
 
-While the script is mainly tested with ESP-EYE, other ESP32-based development boards will work too.
+- 开发板：ESP32-S3
+- OLED 屏幕：0.96 寸 SSD1306（128x64，I2C 地址 0x78）
+- 气体传感器 x5（H2S / ODOR / HCHO / NH3 / ETHANOL）
 
-### Software
+## 编译与烧录
 
-* [Edge Impulse CLI](https://docs.edgeimpulse.com/docs/cli-installation).
+### 1. 环境准备
 
-* [ESP IDF 5.1.1](https://docs.espressif.com/projects/esp-idf/en/v5.1.1/esp32/get-started/index.html).
+```bash
+# 激活 ESP-IDF（已安装 v5.3.1）
+get_idf
+```
 
+### 2. 编译
 
-## Building the application
+```bash
+cd example-standalone-inferencing-espressif-esp32
+idf.py build
+```
 
-### Get the Edge Impulse SDK
+### 3. 烧录
 
-Unzip the deployed `C++ library` from your Edge Impulse project and copy only the folders to the root directory of this repository:
+```bash
+# Linux/Mac
+idf.py -p /dev/ttyUSB0 flash monitor
 
-   ```
-   example-standalone-inferencing-espressif-esp32/
-   ├─ edge-impulse-sdk
-   ├─ model-parameters
-   ├─ main
-   ├─ tflite-model
-   ├─ .gitignore
-   ├─ CMakeLists.txt
-   ├─ LICENSE
-   ├─ README.md
-   ├─ sdkconfig
-   ├─ sdkconfig.old
-   └─ partitions.csv
-   ```
+# Windows
+idf.py -p COM3 flash monitor
+```
 
-### Compile
+串口波特率：115200
 
-1. Initialize ESP IDF:
-   ```bash
-   get_idf
-   ```
-2. Compile:
-   ```bash
-   idf.py build
-   ```
+## 输出说明
 
-### Flash
+- **串口输出**：`result:标签,confidence:概率`
+- **OLED 显示**：分类结果 + 置信度百分比
 
-Connect the ESP32 board to your computer.
+## 更换模型
 
-Run:
-   ```bash
-   idf.py -p /dev/ttyUSB0 flash monitor
-   ```
+从 Edge Impulse 导出 C++ 库后，替换以下文件夹：
 
-Where ```/dev/ttyUSB0``` needs to be changed to actual port where ESP32 is connected on your system.
+```
+├── edge-impulse-sdk/
+├── model-parameters/
+├── tflite-model/
+```
 
-### Serial connection
-
-Use screen, minicom or Serial monitor in Arduino IDE to set up a serial connection over USB. The following UART settings are used: 115200 baud, 8N1.
-
-### Troubleshooting and optimization
-
-When switching boards or upgrading to newer version of SDK, the `sdkconfig` file in the project folder gets overwritten. Run `idf.py menuconfig` to enter configuration menu and make sure that all the relevant performance settings (e.g. Flash SPI speed (80 MHz), CPU Frequency (240 MHz), CONFIG_COMPILER_OPTIMIZATION_PERF=y) are set.
+然后重新编译烧录即可。

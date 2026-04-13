@@ -48,7 +48,8 @@ list(APPEND SOURCE_FILES ${MODEL_FILES})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_NN})
 list(APPEND SOURCE_FILES ${S_FILES_ESP_DSP})
 
-idf_component_register(SRCS "main.cpp" "${SOURCE_FILES}"
-                       INCLUDE_DIRS "${include_dirs}")
+idf_component_register(SRCS "main.cpp" "gas_sensors.c" "my_oled.c" "${SOURCE_FILES}"
+                       INCLUDE_DIRS "${include_dirs}" "."
+                       REQUIRES esp_timer nvs_flash esp_adc esp_driver_gpio driver)
 
-target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++17)
+target_compile_options(${COMPONENT_LIB} PRIVATE -std=gnu++17 -Wno-maybe-uninitialized)

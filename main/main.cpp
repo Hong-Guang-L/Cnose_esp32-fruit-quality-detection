@@ -22,18 +22,34 @@
 
 /* Include ----------------------------------------------------------------- */
 #include <stdio.h>
+#include <string.h>
 
 #include "edge-impulse-sdk/classifier/ei_run_classifier.h"
 
 #include "driver/gpio.h"
 #include "sdkconfig.h"
 #include "esp_idf_version.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "nvs_flash.h"
+#include "gas_sensors.h"
+#include "my_oled.h"
+#include <stdio.h>
 
 #define LED_PIN GPIO_NUM_21
 
-static const float features[] = {
-    // copy raw features here (for example from the 'Live classification' page)
+static gas_sensors_config_t sensor_config = {
+    .h2s_gpio = 7,
+    .odor_gpio = 1,
+    .hcho_gpio = 2,
+    .nh3_gpio = 5,
+    .ethanol_gpio = 6
 };
+
+#define NUM_WINDOWS EI_CLASSIFIER_RAW_SAMPLE_COUNT
+#define NUM_SENSORS EI_CLASSIFIER_RAW_SAMPLES_PER_FRAME
+static float features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE] = {0};
+static int feature_index = 0;
 
 void setup_led() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -50,44 +66,26 @@ int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
 }
 
 void print_inference_result(ei_impulse_result_t result) {
-
-    // Print how long it took to perform inference
-    ei_printf("Timing: DSP %d ms, inference %d ms, anomaly %d ms\r\n",
-            result.timing.dsp,
-            result.timing.classification,
-            result.timing.anomaly);
-
-    // Print the prediction results (object detection)
-#if EI_CLASSIFIER_OBJECT_DETECTION == 1
-    ei_printf("Object detection bounding boxes:\r\n");
-    for (uint32_t i = 0; i < result.bounding_boxes_count; i++) {
-        ei_impulse_result_bounding_box_t bb = result.bounding_boxes[i];
-        if (bb.value == 0) {
-            continue;
-        }
-        ei_printf("  %s (%f) [ x: %u, y: %u, width: %u, height: %u ]\r\n",
-                bb.label,
-                bb.value,
-                bb.x,
-                bb.y,
-                bb.width,
-                bb.height);
-    }
-
-    // Print the prediction results (classification)
-#else
-    ei_printf("Predictions:\r\n");
+    // 先输出所有类别的概率
     for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
-        ei_printf("  %s: ", ei_classifier_inferencing_categories[i]);
-        ei_printf("%.5f\r\n", result.classification[i].value);
+        ei_printf("%s:%.3f ", ei_classifier_inferencing_categories[i], result.classification[i].value);
     }
-#endif
-
-    // Print anomaly result (if it exists)
-#if EI_CLASSIFIER_HAS_ANOMALY == 1
-    ei_printf("Anomaly prediction: %.3f\r\n", result.anomaly);
-#endif
-
+    ei_printf("\n");
+    
+    // 找到概率最高的类别
+    float max_value = 0;
+    const char* max_label = "";
+    
+    for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+        if (result.classification[i].value > max_value) {
+            max_value = result.classification[i].value;
+            max_label = ei_classifier_inferencing_categories[i];
+        }
+    }
+    
+    // 输出格式：result:标签,confidence:概率
+    ei_printf("result:%s,confidence:%.3f\n", max_label, max_value);
+    fflush(stdout);
 }
 
 extern "C" int app_main()
@@ -95,38 +93,98 @@ extern "C" int app_main()
     setup_led();
     ei_sleep(100);
 
-    ei_impulse_result_t result = { nullptr };
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
 
-    ei_printf("Edge Impulse standalone inferencing (Espressif ESP32)\n");
+    // 初始化 OLED (使用硬件 I2C)
+    oled_init_params_t oled_params = {
+        .contrast = 0xFF,
+        .lateral_flip = false,   // 不左右翻转
+        .longitudinal_flip = false, // 不上下翻转
+        .inverse = false
+    };
+    
+    printf("OLED: Initializing with hardware I2C...\n");
+    oled_init(&oled_params);
+    printf("OLED: Initialized successfully!\n");
+    
+    // 显示测试
+    oled_fill(0x00);
+    oled_printf(0, 0, "Fruit Quality", 1);
+    oled_printf(0, 24, "Monitoring...", 1);
+    oled_refresh();
 
-    if (sizeof(features) / sizeof(float) != EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE)
-    {
-        ei_printf("The size of your 'features' array is not correct. Expected %d items, but had %u\n",
-                EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE, sizeof(features) / sizeof(float));
+    if (gas_sensors_init(&sensor_config) != ESP_OK) {
         return 1;
     }
 
+    ei_sleep(2000);
+
+    ei_impulse_result_t result = { nullptr };
+    gas_sensors_data_t sensor_data;
+    char oled_line[32];
+
     while (true)
     {
-        // blink LED
         gpio_set_level(LED_PIN, 1);
 
-        // the features are stored into flash, and we don't want to load everything into RAM
-        signal_t features_signal;
-        features_signal.total_length = sizeof(features) / sizeof(features[0]);
-        features_signal.get_data = &raw_feature_get_data;
+        if (gas_sensors_read(&sensor_data) == ESP_OK) {
+            // 输出传感器数据
+            ei_printf("h2s:%d,odor:%d,hcho:%d,nh3:%d,ethanol:%d\n",
+                   sensor_data.h2s_value,
+                   sensor_data.odor_value,
+                   sensor_data.hcho_value,
+                   sensor_data.nh3_value,
+                   sensor_data.ethanol_value);
+            
+            features[feature_index * NUM_SENSORS + 0] = (float)sensor_data.h2s_value;
+            features[feature_index * NUM_SENSORS + 1] = (float)sensor_data.odor_value;
+            features[feature_index * NUM_SENSORS + 2] = (float)sensor_data.hcho_value;
+            features[feature_index * NUM_SENSORS + 3] = (float)sensor_data.nh3_value;
+            features[feature_index * NUM_SENSORS + 4] = (float)sensor_data.ethanol_value;
 
-        // invoke the impulse
-        EI_IMPULSE_ERROR res = run_classifier(&features_signal, &result, false /* debug */);
-        if (res != EI_IMPULSE_OK) {
-            ei_printf("ERR: Failed to run classifier (%d)\n", res);
-            return res;
+            feature_index = (feature_index + 1) % NUM_WINDOWS;
+
+            if (feature_index == 0) {
+                signal_t features_signal;
+                features_signal.total_length = sizeof(features) / sizeof(features[0]);
+                features_signal.get_data = &raw_feature_get_data;
+
+                EI_IMPULSE_ERROR res = run_classifier(&features_signal, &result, false);
+                if (res == EI_IMPULSE_OK) {
+                    print_inference_result(result);
+                    
+                    // 更新 OLED 显示
+                    float max_value = 0;
+                    const char* max_label = "";
+                    
+                    for (uint16_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+                        if (result.classification[i].value > max_value) {
+                            max_value = result.classification[i].value;
+                            max_label = ei_classifier_inferencing_categories[i];
+                        }
+                    }
+                    
+                    oled_fill(0x00);
+                    oled_printf(0, 0, "Fruit Quality", 1);
+                    
+                    sprintf(oled_line, "Result: %s", max_label);
+                    oled_printf(0, 20, oled_line, 1);
+                    
+                    sprintf(oled_line, "Conf: %.1f%%", max_value * 100);
+                    oled_printf(0, 40, oled_line, 1);
+                    
+                    oled_refresh();
+                }
+            }
         }
 
-        print_inference_result(result);
-
         gpio_set_level(LED_PIN, 0);
-        ei_sleep(1000);
+        ei_sleep(100);
     }
 }
 
